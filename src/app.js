@@ -2,11 +2,18 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+const clientesRoutes = require('./routes/clientes.routes');
+const llantasRoutes = require('./routes/llantas.routes');
+const ventasRoutes = require('./routes/ventas.routes');
+const viajesRoutes = require('./routes/viajes.routes');
+const facturasRoutes = require('./routes/facturas.routes');
+const reportesRoutes = require('./routes/reportes.routes');
+
 const app = express();
 
 const allowedOrigins = [
-  'http://localhost:5173',                 // desarrollo local
-  process.env.FRONTEND_URL,                // se define en Render (tu dominio de Vercel)
+  'http://localhost:5173',
+  process.env.FRONTEND_URL,
 ];
 
 app.use(cors({
