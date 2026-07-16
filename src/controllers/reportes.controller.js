@@ -29,8 +29,10 @@ exports.reporteViajes = async (req, res) => {
     .input('hasta', sql.Date, hasta)
     .query('SELECT * FROM Viajes WHERE Fecha BETWEEN @desde AND @hasta ORDER BY Fecha');
 
-  const totalViajes = result.recordset.reduce((sum, r) => sum + r.Precio, 0);
-  res.json({ viajes: result.recordset, totalViajes });
+  const totalViajes = result.recordset.reduce((sum, r) => sum + r.Total, 0);
+  const totalPendiente = result.recordset.reduce((sum, r) => sum + r.SaldoPendiente, 0);
+
+  res.json({ viajes: result.recordset, totalViajes, totalPendiente });
 };
 
 exports.reporteFacturas = async (req, res) => {
