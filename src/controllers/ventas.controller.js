@@ -47,7 +47,7 @@ exports.getAll = async (req, res) => {
 };
 
 exports.create = async (req, res) => {
-  const { clienteId, llantaId, cantidad, porcentajeIva, montoPagado } = req.body;
+  const { clienteId, llantaId, cantidad, porcentajeIva, montoPagado, fechaVenta } = req.body;
 
   if (!clienteId || !llantaId || !cantidad) {
     return res.status(400).json({ error: 'clienteId, llantaId y cantidad son obligatorios' });
@@ -71,6 +71,9 @@ exports.create = async (req, res) => {
       throw new Error(`Stock insuficiente. Disponible: ${stockDisponible}`);
     }
 
+    // Si no mandan fecha de venta, usamos la fecha/hora actual (comportamiento anterior)
+    const fechaVentaFinal = fechaVenta || new Date();
+
     const insertRequest = new sql.Request(transaction);
     const ventaResult = await insertRequest
       .input('clienteId', sql.Int, clienteId)
@@ -79,11 +82,24 @@ exports.create = async (req, res) => {
       .input('precio', sql.Decimal(10, 2), PrecioVenta)
       .input('iva', sql.Decimal(5, 2), porcentajeIva ?? 13.00)
       .input('pagado', sql.Decimal(10, 2), montoPagado || 0)
+      .input('fechaVenta', sql.Date, fechaVentaFinal)
       .query(`
-        INSERT INTO Ventas (ClienteId, LlantaId, Cantidad, PrecioVentaUnitario, PorcentajeIva, MontoPagado)
+        INSERT INTO Ventas (ClienteId, LlantaId, Cantidad, PrecioVentaUnitario, PorcentajeIva, MontoPagado, FechaVenta)
         OUTPUT INSERTED.*
-        VALUES (@clienteId, @llantaId, @cantidad, @precio, @iva, @pagado)
+        VALUES (@clienteId, @llantaId, @cantidad, @precio, @iva, @pagado, @fechaVenta)
       `);
+
+    const nuevaVenta = ventaResult.recordset[0];
+
+    // Si registró un pago inicial, lo dejamos también en el historial de abonos
+    if (montoPagado && Number(montoPagado) > 0) {
+      const abonoRequest = new sql.Request(transaction);
+      await abonoRequest
+        .input('ventaId', sql.Int, nuevaVenta.VentaId)
+        .input('monto', sql.Decimal(10, 2), montoPagado)
+        .input('fecha', sql.Date, fechaVentaFinal)
+        .query(`INSERT INTO AbonosVentas (VentaId, Monto, FechaAbono) VALUES (@ventaId, @monto, @fecha)`);
+    }
 
     const stockRequest = new sql.Request(transaction);
     await stockRequest
@@ -92,20 +108,36 @@ exports.create = async (req, res) => {
       .query('UPDATE Llantas SET Cantidad = Cantidad - @cantidad WHERE LlantaId = @llantaId');
 
     await transaction.commit();
-    res.status(201).json(ventaResult.recordset[0]);
+    res.status(201).json(nuevaVenta);
   } catch (err) {
     await transaction.rollback();
     res.status(400).json({ error: err.message });
   }
 };
 
+// Registrar un abono posterior, con su propia fecha
 exports.registrarAbono = async (req, res) => {
-  try {
-    const { monto } = req.body;
-    if (!monto || monto <= 0) return res.status(400).json({ error: 'Monto de abono inválido' });
+  const { monto, fechaAbono } = req.body;
+  if (!monto || monto <= 0) return res.status(400).json({ error: 'Monto de abono inválido' });
 
-    const pool = await getPool();
-    const result = await pool.request()
+  const pool = await getPool();
+  const transaction = new sql.Transaction(pool);
+
+  try {
+    await transaction.begin();
+    const fecha = fechaAbono || new Date();
+
+    // 1. Registrar el abono en el historial
+    const abonoRequest = new sql.Request(transaction);
+    await abonoRequest
+      .input('ventaId', sql.Int, req.params.id)
+      .input('monto', sql.Decimal(10, 2), monto)
+      .input('fecha', sql.Date, fecha)
+      .query(`INSERT INTO AbonosVentas (VentaId, Monto, FechaAbono) VALUES (@ventaId, @monto, @fecha)`);
+
+    // 2. Actualizar el acumulado en Ventas
+    const updateRequest = new sql.Request(transaction);
+    const result = await updateRequest
       .input('id', sql.Int, req.params.id)
       .input('monto', sql.Decimal(10, 2), monto)
       .query(`
@@ -114,8 +146,24 @@ exports.registrarAbono = async (req, res) => {
         WHERE VentaId = @id
       `);
 
-    if (result.recordset.length === 0) return res.status(404).json({ error: 'Venta no encontrada' });
+    if (result.recordset.length === 0) throw new Error('Venta no encontrada');
+
+    await transaction.commit();
     res.json(result.recordset[0]);
+  } catch (err) {
+    await transaction.rollback();
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// Historial de abonos de una venta específica
+exports.getAbonos = async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('ventaId', sql.Int, req.params.id)
+      .query('SELECT * FROM AbonosVentas WHERE VentaId = @ventaId ORDER BY FechaAbono ASC, AbonoId ASC');
+    res.json(result.recordset);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
