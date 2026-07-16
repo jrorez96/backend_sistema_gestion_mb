@@ -43,6 +43,10 @@ exports.getAll = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const { fecha, destino, precio } = req.body;
+    if (!fecha || !destino || precio == null) {
+      return res.status(400).json({ error: 'Fecha, destino y precio son obligatorios' });
+    }
+
     const pool = await getPool();
     const result = await pool.request()
       .input('fecha', sql.Date, fecha)
