@@ -71,7 +71,6 @@ exports.create = async (req, res) => {
       throw new Error(`Stock insuficiente. Disponible: ${stockDisponible}`);
     }
 
-    // Si no mandan fecha de venta, usamos la fecha/hora actual (comportamiento anterior)
     const fechaVentaFinal = fechaVenta || new Date();
 
     const insertRequest = new sql.Request(transaction);
@@ -91,7 +90,6 @@ exports.create = async (req, res) => {
 
     const nuevaVenta = ventaResult.recordset[0];
 
-    // Si registró un pago inicial, lo dejamos también en el historial de abonos
     if (montoPagado && Number(montoPagado) > 0) {
       const abonoRequest = new sql.Request(transaction);
       await abonoRequest
@@ -115,7 +113,72 @@ exports.create = async (req, res) => {
   }
 };
 
-// Registrar un abono posterior, con su propia fecha
+// NUEVO: editar una venta ya registrada (cantidad, precio unitario, IVA, fecha)
+// Ajusta el stock si la cantidad cambia. NO toca MontoPagado (eso se maneja con abonos).
+exports.update = async (req, res) => {
+  const { cantidad, precioVentaUnitario, porcentajeIva, fechaVenta } = req.body;
+
+  if (!cantidad || precioVentaUnitario == null) {
+    return res.status(400).json({ error: 'Cantidad y precio unitario son obligatorios' });
+  }
+
+  const pool = await getPool();
+  const transaction = new sql.Transaction(pool);
+
+  try {
+    await transaction.begin();
+
+    const actualRequest = new sql.Request(transaction);
+    const actual = await actualRequest
+      .input('id', sql.Int, req.params.id)
+      .query('SELECT LlantaId, Cantidad FROM Ventas WHERE VentaId = @id');
+
+    if (actual.recordset.length === 0) throw new Error('Venta no encontrada');
+    const { LlantaId, Cantidad: cantidadAnterior } = actual.recordset[0];
+
+    const nuevaCantidad = Number(cantidad);
+    const diferencia = nuevaCantidad - cantidadAnterior; // positivo = vendió más, hay que descontar más stock
+
+    if (diferencia !== 0) {
+      const llantaRequest = new sql.Request(transaction);
+      const llanta = await llantaRequest
+        .input('llantaId', sql.Int, LlantaId)
+        .query('SELECT Cantidad FROM Llantas WHERE LlantaId = @llantaId');
+
+      const stockActual = llanta.recordset[0].Cantidad;
+      if (diferencia > 0 && stockActual < diferencia) {
+        throw new Error(`Stock insuficiente para aumentar la cantidad. Disponible: ${stockActual}`);
+      }
+
+      const stockRequest = new sql.Request(transaction);
+      await stockRequest
+        .input('llantaId', sql.Int, LlantaId)
+        .input('diferencia', sql.Int, diferencia)
+        .query('UPDATE Llantas SET Cantidad = Cantidad - @diferencia WHERE LlantaId = @llantaId');
+    }
+
+    const updateRequest = new sql.Request(transaction);
+    const result = await updateRequest
+      .input('id', sql.Int, req.params.id)
+      .input('cantidad', sql.Int, nuevaCantidad)
+      .input('precio', sql.Decimal(10, 2), precioVentaUnitario)
+      .input('iva', sql.Decimal(5, 2), porcentajeIva)
+      .input('fechaVenta', sql.Date, fechaVenta)
+      .query(`
+        UPDATE Ventas
+        SET Cantidad=@cantidad, PrecioVentaUnitario=@precio, PorcentajeIva=@iva, FechaVenta=@fechaVenta
+        OUTPUT INSERTED.*
+        WHERE VentaId=@id
+      `);
+
+    await transaction.commit();
+    res.json(result.recordset[0]);
+  } catch (err) {
+    await transaction.rollback();
+    res.status(400).json({ error: err.message });
+  }
+};
+
 exports.registrarAbono = async (req, res) => {
   const { monto, fechaAbono } = req.body;
   if (!monto || monto <= 0) return res.status(400).json({ error: 'Monto de abono inválido' });
@@ -127,7 +190,6 @@ exports.registrarAbono = async (req, res) => {
     await transaction.begin();
     const fecha = fechaAbono || new Date();
 
-    // 1. Registrar el abono en el historial
     const abonoRequest = new sql.Request(transaction);
     await abonoRequest
       .input('ventaId', sql.Int, req.params.id)
@@ -135,7 +197,6 @@ exports.registrarAbono = async (req, res) => {
       .input('fecha', sql.Date, fecha)
       .query(`INSERT INTO AbonosVentas (VentaId, Monto, FechaAbono) VALUES (@ventaId, @monto, @fecha)`);
 
-    // 2. Actualizar el acumulado en Ventas
     const updateRequest = new sql.Request(transaction);
     const result = await updateRequest
       .input('id', sql.Int, req.params.id)
@@ -156,7 +217,6 @@ exports.registrarAbono = async (req, res) => {
   }
 };
 
-// Historial de abonos de una venta específica
 exports.getAbonos = async (req, res) => {
   try {
     const pool = await getPool();
