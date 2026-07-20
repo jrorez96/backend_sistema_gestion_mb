@@ -55,13 +55,13 @@ exports.getById = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    const { marca, perfil, taco, medida, cantidad, precioCompra, precioVenta } = req.body;
+    const { marca, perfil, taco, medida, cantidad, precioCompra, precioVentaContado, precioVentaCredito } = req.body;
 
     if (!marca || !perfil || !taco || !medida) {
       return res.status(400).json({ error: 'Marca, perfil, taco y medida son obligatorios' });
     }
-    if (precioCompra == null || precioVenta == null) {
-      return res.status(400).json({ error: 'Precio de compra y precio de venta son obligatorios' });
+    if (precioCompra == null || precioVentaContado == null || precioVentaCredito == null) {
+      return res.status(400).json({ error: 'Precio de compra, precio de contado y precio de crédito son obligatorios' });
     }
 
     const pool = await getPool();
@@ -72,11 +72,12 @@ exports.create = async (req, res) => {
       .input('medida', sql.NVarChar(50), medida)
       .input('cantidad', sql.Int, cantidad || 0)
       .input('precioCompra', sql.Decimal(10, 2), precioCompra)
-      .input('precioVenta', sql.Decimal(10, 2), precioVenta)
+      .input('precioVentaContado', sql.Decimal(10, 2), precioVentaContado)
+      .input('precioVentaCredito', sql.Decimal(10, 2), precioVentaCredito)
       .query(`
-        INSERT INTO Llantas (Marca, Perfil, Taco, Medida, Cantidad, PrecioCompra, PrecioVenta)
+        INSERT INTO Llantas (Marca, Perfil, Taco, Medida, Cantidad, PrecioCompra, PrecioVentaContado, PrecioVentaCredito)
         OUTPUT INSERTED.*
-        VALUES (@marca, @perfil, @taco, @medida, @cantidad, @precioCompra, @precioVenta)
+        VALUES (@marca, @perfil, @taco, @medida, @cantidad, @precioCompra, @precioVentaContado, @precioVentaCredito)
       `);
     res.status(201).json(result.recordset[0]);
   } catch (err) {
@@ -86,7 +87,7 @@ exports.create = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    const { marca, perfil, taco, medida, cantidad, precioCompra, precioVenta } = req.body;
+    const { marca, perfil, taco, medida, cantidad, precioCompra, precioVentaContado, precioVentaCredito } = req.body;
     const pool = await getPool();
     const result = await pool.request()
       .input('id', sql.Int, req.params.id)
@@ -96,11 +97,13 @@ exports.update = async (req, res) => {
       .input('medida', sql.NVarChar(50), medida)
       .input('cantidad', sql.Int, cantidad)
       .input('precioCompra', sql.Decimal(10, 2), precioCompra)
-      .input('precioVenta', sql.Decimal(10, 2), precioVenta)
+      .input('precioVentaContado', sql.Decimal(10, 2), precioVentaContado)
+      .input('precioVentaCredito', sql.Decimal(10, 2), precioVentaCredito)
       .query(`
         UPDATE Llantas
         SET Marca=@marca, Perfil=@perfil, Taco=@taco, Medida=@medida,
-            Cantidad=@cantidad, PrecioCompra=@precioCompra, PrecioVenta=@precioVenta
+            Cantidad=@cantidad, PrecioCompra=@precioCompra,
+            PrecioVentaContado=@precioVentaContado, PrecioVentaCredito=@precioVentaCredito
         OUTPUT INSERTED.*
         WHERE LlantaId=@id
       `);

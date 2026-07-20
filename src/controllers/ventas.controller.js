@@ -47,11 +47,13 @@ exports.getAll = async (req, res) => {
 };
 
 exports.create = async (req, res) => {
-  const { clienteId, llantaId, cantidad, porcentajeIva, montoPagado, fechaVenta } = req.body;
+  const { clienteId, llantaId, cantidad, porcentajeIva, montoPagado, fechaVenta, tipoVenta } = req.body;
 
   if (!clienteId || !llantaId || !cantidad) {
     return res.status(400).json({ error: 'clienteId, llantaId y cantidad son obligatorios' });
   }
+
+  const tipoVentaFinal = tipoVenta === 'Credito' ? 'Credito' : 'Contado';
 
   const pool = await getPool();
   const transaction = new sql.Transaction(pool);
@@ -62,14 +64,17 @@ exports.create = async (req, res) => {
 
     const llanta = await request
       .input('llantaId', sql.Int, llantaId)
-      .query('SELECT PrecioVenta, Cantidad FROM Llantas WHERE LlantaId = @llantaId');
+      .query('SELECT PrecioVentaContado, PrecioVentaCredito, Cantidad FROM Llantas WHERE LlantaId = @llantaId');
 
     if (llanta.recordset.length === 0) throw new Error('Llanta no encontrada');
-    const { PrecioVenta, Cantidad: stockDisponible } = llanta.recordset[0];
+    const { PrecioVentaContado, PrecioVentaCredito, Cantidad: stockDisponible } = llanta.recordset[0];
 
     if (stockDisponible < cantidad) {
       throw new Error(`Stock insuficiente. Disponible: ${stockDisponible}`);
     }
+
+    // Elige el precio según el tipo de venta
+    const precioAUsar = tipoVentaFinal === 'Credito' ? PrecioVentaCredito : PrecioVentaContado;
 
     const fechaVentaFinal = fechaVenta || new Date();
 
@@ -78,14 +83,15 @@ exports.create = async (req, res) => {
       .input('clienteId', sql.Int, clienteId)
       .input('llantaId', sql.Int, llantaId)
       .input('cantidad', sql.Int, cantidad)
-      .input('precio', sql.Decimal(10, 2), PrecioVenta)
+      .input('precio', sql.Decimal(10, 2), precioAUsar)
       .input('iva', sql.Decimal(5, 2), porcentajeIva ?? 13.00)
       .input('pagado', sql.Decimal(10, 2), montoPagado || 0)
       .input('fechaVenta', sql.Date, fechaVentaFinal)
+      .input('tipoVenta', sql.NVarChar(20), tipoVentaFinal)
       .query(`
-        INSERT INTO Ventas (ClienteId, LlantaId, Cantidad, PrecioVentaUnitario, PorcentajeIva, MontoPagado, FechaVenta)
+        INSERT INTO Ventas (ClienteId, LlantaId, Cantidad, PrecioVentaUnitario, PorcentajeIva, MontoPagado, FechaVenta, TipoVenta)
         OUTPUT INSERTED.*
-        VALUES (@clienteId, @llantaId, @cantidad, @precio, @iva, @pagado, @fechaVenta)
+        VALUES (@clienteId, @llantaId, @cantidad, @precio, @iva, @pagado, @fechaVenta, @tipoVenta)
       `);
 
     const nuevaVenta = ventaResult.recordset[0];
@@ -113,10 +119,8 @@ exports.create = async (req, res) => {
   }
 };
 
-// NUEVO: editar una venta ya registrada (cantidad, precio unitario, IVA, fecha)
-// Ajusta el stock si la cantidad cambia. NO toca MontoPagado (eso se maneja con abonos).
 exports.update = async (req, res) => {
-  const { cantidad, precioVentaUnitario, porcentajeIva, fechaVenta } = req.body;
+  const { cantidad, precioVentaUnitario, porcentajeIva, fechaVenta, tipoVenta } = req.body;
 
   if (!cantidad || precioVentaUnitario == null) {
     return res.status(400).json({ error: 'Cantidad y precio unitario son obligatorios' });
@@ -137,7 +141,7 @@ exports.update = async (req, res) => {
     const { LlantaId, Cantidad: cantidadAnterior } = actual.recordset[0];
 
     const nuevaCantidad = Number(cantidad);
-    const diferencia = nuevaCantidad - cantidadAnterior; // positivo = vendió más, hay que descontar más stock
+    const diferencia = nuevaCantidad - cantidadAnterior;
 
     if (diferencia !== 0) {
       const llantaRequest = new sql.Request(transaction);
@@ -157,6 +161,8 @@ exports.update = async (req, res) => {
         .query('UPDATE Llantas SET Cantidad = Cantidad - @diferencia WHERE LlantaId = @llantaId');
     }
 
+    const tipoVentaFinal = tipoVenta === 'Credito' ? 'Credito' : 'Contado';
+
     const updateRequest = new sql.Request(transaction);
     const result = await updateRequest
       .input('id', sql.Int, req.params.id)
@@ -164,9 +170,10 @@ exports.update = async (req, res) => {
       .input('precio', sql.Decimal(10, 2), precioVentaUnitario)
       .input('iva', sql.Decimal(5, 2), porcentajeIva)
       .input('fechaVenta', sql.Date, fechaVenta)
+      .input('tipoVenta', sql.NVarChar(20), tipoVentaFinal)
       .query(`
         UPDATE Ventas
-        SET Cantidad=@cantidad, PrecioVentaUnitario=@precio, PorcentajeIva=@iva, FechaVenta=@fechaVenta
+        SET Cantidad=@cantidad, PrecioVentaUnitario=@precio, PorcentajeIva=@iva, FechaVenta=@fechaVenta, TipoVenta=@tipoVenta
         OUTPUT INSERTED.*
         WHERE VentaId=@id
       `);
